@@ -2,6 +2,7 @@ import os
 import chromadb
 from typing import List, Dict, Any
 from sentence_transformers import SentenceTransformer
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
 class VectorDB:
@@ -39,7 +40,8 @@ class VectorDB:
 
         print(f"Vector database initialized with collection: {self.collection_name}")
 
-    def chunk_text(self, text: str, chunk_size: int = 500) -> List[str]:
+    @staticmethod
+    def chunk_text(text: str, chunk_size: int = 500) -> List[str]:
         """
         Simple text chunking by splitting on spaces and grouping into chunks.
 
@@ -50,7 +52,7 @@ class VectorDB:
         Returns:
             List of text chunks
         """
-        # TODO: Implement text chunking logic
+        # TODO: Implementing text chunking logic
         # You have several options for chunking text - choose one or experiment with multiple:
         #
         # OPTION 1: Simple word-based splitting
@@ -66,16 +68,22 @@ class VectorDB:
         #   - Group semantically related sentences together
         #   - Consider paragraph boundaries and document structure
         #
-        # Feel free to try different approaches and see what works best!
 
-        chunks = []
-        # Your implementation here
+        """
+           Use LangChain RecursiveCharacterTextSplitter to split text.
+           """
 
-        return chunks
+        chunks = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size, chunk_overlap=50
+        )
+
+        chunks.split_text(text)
+
+        return chunks.split_text(text)
 
     def add_documents(self, documents: List) -> None:
         """
-        Add documents to the vector database.
+        Add documents to ChromaDB with embeddings.
 
         Args:
             documents: List of documents
@@ -89,8 +97,19 @@ class VectorDB:
         # HINT: Store the embeddings, documents, metadata, and IDs in your vector database
         # HINT: Print progress messages to inform the user
 
+
         print(f"Processing {len(documents)} documents...")
-        # Your implementation here
+        for idx, doc in enumerate(documents):
+            chunks = self.chunk_text(doc)
+            ids = [f"doc_{idx}_chunk_{i}" for i, _ in enumerate(chunks)]
+            embeddings = self.embedding_model.encode(chunks).tolist()
+
+            self.collection.add(
+                ids=ids,
+                documents=chunks,
+                metadatas=[{"source": f"doc_{idx}"}] * len(chunks),
+                embeddings=embeddings
+            )
         print("Documents added to vector database")
 
     def search(self, query: str, n_results: int = 5) -> Dict[str, Any]:
@@ -111,10 +130,16 @@ class VectorDB:
         # HINT: Return a dictionary with keys: 'documents', 'metadatas', 'distances', 'ids'
         # HINT: Handle the case where results might be empty
 
-        # Your implementation here
+        query_emb = self.embedding_model.encode([query]).tolist()
+        results = self.collection.query(
+            query_embeddings=query_emb,
+            n_results=n_results,
+            include=["documents", "metadatas", "distances"]
+        )
+
         return {
-            "documents": [],
-            "metadatas": [],
-            "distances": [],
-            "ids": [],
+            "documents": results.get("documents", []),
+            "metadatas": results.get("metadatas", []),
+            "distances": results.get("distances", [])
         }
+

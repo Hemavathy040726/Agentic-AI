@@ -1,6 +1,9 @@
 import os
+from itertools import chain
 from typing import List
+import pdfplumber
 from dotenv import load_dotenv
+
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from vectordb import VectorDB
@@ -14,18 +17,39 @@ load_dotenv()
 
 def load_documents() -> List[str]:
     """
-    Load documents for demonstration.
-
+    Load PDF documents from the data folder.
     Returns:
-        List of sample documents
+        List of document strings
     """
+    #pdf_folder = "./data"
+    pdf_folder = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+    print("pdf folder ",pdf_folder)
+    pdf_files = [
+        "env_prot_act_1986.pdf",
+        "con_prot_act_2019.pdf",
+        "it_act_2000.pdf"
+    ]
     results = []
-    # TODO: Implement document loading
-    # HINT: Read the documents from the data directory
-    # HINT: Return a list of documents
-    # HINT: Your implementation depends on the type of documents you are using (.txt, .pdf, etc.)
 
-    # Your implementation here
+    #Reads all pages of each PDF and stores text in a list.
+    #Each PDF corresponds to one document string.
+    for pdf_file in pdf_files:
+        path = os.path.join(pdf_folder, pdf_file)
+        if not os.path.exists(path):
+            print(f"PDF not found: {pdf_file}")
+            continue
+
+        doc_text = ""
+      #  with fitz.Document(path) as pdf:
+         #   for page in pdf:
+       #         doc_text += page.get_text()
+       # results.append(doc_text)
+
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages:
+                doc_text += page.extract_text()
+        results.append(doc_text)
+        print(f"Loaded PDF: {pdf_file}, length: {len(doc_text)} characters")
     return results
 
 
@@ -49,18 +73,30 @@ class RAGAssistant:
         self.vector_db = VectorDB()
 
         # Create RAG prompt template
-        # TODO: Implement your RAG prompt template
-        # HINT: Use ChatPromptTemplate.from_template() with a template string
-        # HINT: Your template should include placeholders for {context} and {question}
-        # HINT: Design your prompt to effectively use retrieved context to answer questions
-        self.prompt_template = None  # Your implementation here
+        # TODO: Implementing RAG prompt template
+        #This template includes {context} from your PDFs and {question} from user input.
+
+        self.prompt_template = ChatPromptTemplate.from_template(
+                                """
+                                Use the following context to answer the question as accurately as possible.
+                                
+                                Context:
+                                {context}
+                                
+                                Question:
+                                {question}
+                                
+                                Answer:
+                                """
+                                )
 
         # Create the chain
         self.chain = self.prompt_template | self.llm | StrOutputParser()
 
         print("RAG Assistant initialized successfully")
 
-    def _initialize_llm(self):
+    @staticmethod
+    def  _initialize_llm():
         """
         Initialize the LLM by checking for available API keys.
         Tries OpenAI, Groq, and Google Gemini in that order.
@@ -105,7 +141,7 @@ class RAGAssistant:
 
     def invoke(self, input: str, n_results: int = 3) -> str:
         """
-        Query the RAG assistant.
+        Query the RAG assistant using GPT-4o-mini.
 
         Args:
             input: User's input
@@ -114,15 +150,31 @@ class RAGAssistant:
         Returns:
             Dictionary containing the answer and retrieved context
         """
-        llm_answer = ""
+
         # TODO: Implement the RAG query pipeline
         # HINT: Use self.vector_db.search() to retrieve relevant context chunks
         # HINT: Combine the retrieved document chunks into a single context string
         # HINT: Use self.chain.invoke() with context and question to generate the response
         # HINT: Return a string answer from the LLM
 
-        # Your implementation here
-        return llm_answer
+        # 1️⃣ Retrieve relevant chunks
+        search_results = self.vector_db.search(input, n_results=n_results)
+
+        chunks = search_results.get("documents", [])
+        flat_chunks = list(chain.from_iterable(chunks))
+        if not chunks:
+            return "No relevant information found in the documents."
+
+        # 2️⃣ Combine chunks into single context
+        context = "\n\n".join(flat_chunks)
+
+        # 3️⃣ Use the prompt template
+        prompt = self.prompt_template.format(context=context, question=input)
+
+        # 4️⃣ Generate answer using the LLM
+        llm_answer = self.llm.invoke(prompt)  # ChatOpenAI automatically handles the call
+
+        return llm_answer.text
 
 
 def main():
@@ -134,10 +186,10 @@ def main():
 
         # Load sample documents
         print("\nLoading documents...")
-        sample_docs = load_documents()
-        print(f"Loaded {len(sample_docs)} sample documents")
+        docs = load_documents()
+        print(f"Loaded {len(docs)} sample documents")
 
-        assistant.add_documents(sample_docs)
+        assistant.add_documents(docs)
 
         done = False
 
@@ -146,7 +198,7 @@ def main():
             if question.lower() == "quit":
                 done = True
             else:
-                result = assistant.query(question)
+                result = assistant.invoke(question)
                 print(result)
 
     except Exception as e:

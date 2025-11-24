@@ -502,17 +502,6 @@ self.prompt_template = ChatPromptTemplate.from_template(
 )
 ```
 
-## 📊 Performance Metrics
-
-Based on testing with legal professionals:
-
-| Metric | Result |
-|--------|--------|
-| **Query Response Time** | 2-5 seconds |
-| **Accuracy Rate** | 92% (verified against manual research) |
-| **Context Retrieval Precision** | 89% |
-| **Research Time Saved** | 70% average |
-| **User Satisfaction** | 4.5/5 stars |
 
 ## ⚠️ Important Legal Disclaimers
 
@@ -572,28 +561,28 @@ ChromaDB selected for:
 - ✅ Local deployment (data privacy)
 - ✅ Easy integration with LangChain
 
-## 🛣️ Roadmap
+## 🛣️ Future Enhancement
 
-### Phase 1: Enhanced Legal Coverage (Q2 2024)
+### 1: Enhanced Legal Coverage
 - [ ] Add more Indian acts (Companies Act, IPC, CrPC, CPC)
 - [ ] Supreme Court landmark judgments integration
 - [ ] High Court rulings database
 
-### Phase 2: Advanced Features (Q3 2024)
+### 2: Advanced Features
 - [ ] Web interface (Streamlit-based)
 - [ ] Multi-language support (Hindi, regional languages)
 - [ ] Citation extraction and formatting
 - [ ] Comparative provision analysis across acts
 - [ ] Amendment tracking and notifications
 
-### Phase 3: Professional Tools (Q4 2024)
+### 3: Professional Tools
 - [ ] Legal brief generation
 - [ ] Compliance checklist creator
 - [ ] Contract clause verification
 - [ ] REST API for law firm integration
 - [ ] Case law relevance matching
 
-### Phase 4: Scale & Deploy (2025)
+### 4: Scale & Deploy 
 - [ ] Cloud deployment with authentication
 - [ ] Subscription tiers for professionals
 - [ ] Mobile app development

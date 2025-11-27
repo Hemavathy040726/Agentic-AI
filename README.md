@@ -436,35 +436,223 @@ These sections collectively outline various cyber crimes under the IT Act 2000, 
 
 ```
 
-### Programmatic Usage
+## Programmatic Usage
 
-```python
-from app import RAGAssistant, load_documents
+### 🔍 Query Processing, Pre-processing, and Retrieval Evaluation
 
-# Initialize
-assistant = RAGAssistant()
-docs = load_documents()
-assistant.add_documents(docs)
 
-# Single query
-answer = assistant.invoke(
-    "What are consumer rights under CPA 2019?",
-    n_results=5  # Retrieve top 5 relevant chunks
-)
-print(answer)
+This section explains how the Legal-AI-Assistant handles user queries, optimizes them before retrieval, and evaluates retrieval performance using well-defined metrics.\
+All code used in this pipeline is included in the project (`vectordb.py`, `metrics.py`).
 
-# Multiple queries
-queries = [
-    "Digital signature validity",
-    "Environmental compliance requirements",
-    "Product liability provisions"
-]
+**⚙️ 1. Query Pre-Processing**
 
-for query in queries:
-    result = assistant.invoke(query)
-    print(f"\nQ: {query}")
-    print(f"A: {result}\n")
+
+Before sending the query to the vector database, the system applies:
+
+**🔹 Case Normalization**
+
+Other transformations are intentionally avoided to preserve the semantic meaning of legal text.
+
+**Code --- query preprocessing**
+
 ```
+def preprocess_query(query: str) -> str:
+    """
+    Clean and normalize the input query.
+    We apply LIGHT preprocessing to preserve legal semantics.
+    """
+    if not isinstance(query, str):
+        query = str(query)
+
+    q = query.strip()
+    q = q.replace("\n", " ")
+    q = " ".join(q.split())
+    return q
+```
+
+
+**⚙️ 2. Query Processing Flow (RAG Retrieval)**
+
+The main retrieval is implemented in `VectorDB.search()`.\
+Steps:
+    
+  1\. Preprocess user query
+  
+  Ensures stable embedding generation.
+  
+  2\. Generate vector embedding
+  
+  Using model from `embedding.py`:
+  
+  ```
+  embedding = self.embed_fn(processed_query)
+  
+  ```
+  
+  3\. Vector similarity search using CensusDB
+  
+  CensusDB returns the top-K chunks ranked by cosine similarity.
+  
+  4\. Optional Reranking using embed2.swift
+  
+  A second instruction-tuned model re-scores the top results.
+  
+  5\. Return retrieval + reranking scores
+  
+  Provides both stages for transparency and evaluation.
+
+**Code --- main search flow**
+
+```
+@timed
+def search(self, query, k=5):
+    processed_query = preprocess_query(query)
+    embedding = self.embed_fn(processed_query)
+
+    # Step 1: vector search
+    raw_results = self.db.search("legal_chunks", embedding, top_k=k)
+
+    # Extract text docs
+    docs = [r["text"] for r in raw_results]
+
+    # Step 2: Optional reranking
+    if self.rerank_fn:
+        reranked = self.rerank_fn(processed_query, docs)
+        reordered = sorted(reranked, key=lambda x: x["score"], reverse=True)
+    else:
+        reordered = [{"text": d, "score": 0.0} for d in docs]
+
+    return {
+        "query": query,
+        "processed_query": processed_query,
+        "results_vector_search": raw_results,
+        "results_reranked": reordered,
+    }
+
+```
+
+**📊 3. Retrieval Evaluation Metrics**
+
+
+Retrieval evaluation is handled by:
+
+```
+from src.metrics import evaluate_retrieval
+
+```
+
+Legal RAG systems require strict quality checks.\
+This repository evaluates:
+
+  **🔹 Hit@K**
+  
+  Did the system retrieve a relevant document in the top K?
+  
+  **🔹 Recall@K**
+  
+  Out of all correct sections, how many were retrieved in top K?
+  
+  **🔹 MRR (Mean Reciprocal Rank)**
+  
+  Measures how early the model retrieves a correct answer.
+  
+  * * * * *
+  
+  **🔢 Metric Definitions**
+  
+  | Metric | Meaning |
+  | --- | --- |
+  | **Hit@1** | 1 if any gold section appears in the first retrieved result |
+  | **Hit@3** | 1 if found in top 3 |
+  | **Hit@5** | 1 if found in top 5 |
+  | **Recall@K** | (# gold sections found in top K) / (total gold sections) |
+  | **MRR** | 1 / rank of first correct retrieval |
+  
+  * * * * *
+  
+  **📐 Code --- Retrieval Evaluation**
+ 
+  
+  ```
+  def evaluate_retrieval(pred_docs: List[str], gold_keys: List[str]) -> Dict:
+      if not gold_keys or not pred_docs:
+          return {"hit@1": 0, "hit@3": 0, "hit@5": 0,
+                  "recall@1": 0.0, "recall@3": 0.0, "recall@5": 0.0,
+                  "mrr": 0.0}
+  
+      gold = {g.lower().replace(" ", "") for g in gold_keys if g}
+  
+      def contains_gold(text: str) -> bool:
+          t = text.lower().replace(" ", "")
+          return any(g in t for g in gold)
+  
+      pred_lower = [d.lower().replace(" ", "") for d in pred_docs]
+  
+      ks = [1, 3, 5]
+      results = {}
+      first_hit = None
+  
+      found_sections = set()
+      for i, doc in enumerate(pred_lower):
+          if contains_gold(doc):
+              if first_hit is None:
+                  first_hit = i + 1
+              for g in gold:
+                  if g in doc:
+                      found_sections.add(g)
+  
+          for k in ks:
+              if i < k:
+                  results[f"hit@{k}"] = 1
+                  results[f"recall@{k}"] = len(found_sections) / len(gold)
+  
+      # Default values
+      for k in ks:
+          results.setdefault(f"hit@{k}", 0)
+          results.setdefault(f"recall@{k}", len(found_sections) / len(gold) if gold else 0.0)
+  
+      results["mrr"] = 1.0 / first_hit if first_hit else 0.0
+  
+      return results
+  
+  ```
+  
+  * * * * *
+
+**🧪 4. Example Evaluation Output**
+
+
+```
+{
+  "hit@1": 1,
+  "hit@3": 1,
+  "hit@5": 1,
+  "recall@1": 0.33,
+  "recall@3": 0.66,
+  "recall@5": 1.0,
+  "mrr": 1.0
+}
+
+```
+
+* * * * *
+
+**⚡ 5. Performance Timing Metrics**
+
+
+All search functions are wrapped with the `@timed` decorator:
+
+**Example:**
+
+```
+[PERF] search took 0.183s
+
+```
+
+This allows you to generate performance benchmarks automatically during retrieval.
+
+* * * * *
+
 
 ## 🔧 Adding More Legal Acts
 
@@ -641,7 +829,7 @@ ChromaDB selected for:
 ## 📂 Project Structure
 
 ```
-legal-rag-assistant/
+Legal-AI-Assistant/
 ├── data/                           # Legal documents storage
 │   ├── it_act_2000.pdf            # Information Technology Act
 │   ├── env_prot_act_1986.pdf      # Environment Protection Act
@@ -650,15 +838,12 @@ legal-rag-assistant/
 │
 ├── src/
 │   ├── app.py                     # Main RAG assistant
-│   │   ├── RAGAssistant class     # Core RAG logic
-│   │   ├── load_documents()       # PDF loader
-│   │   └── main()                 # CLI interface
 │   │
 │   ├── vectordb.py                # Vector database wrapper
-│   │   ├── VectorDB class         # ChromaDB operations
-│   │   ├── chunk_text()           # Text chunking
-│   │   ├── add_documents()        # Document indexing
-│   │   └── search()               # Similarity search
+│   │
+│   ├── metrics.py                 # Contains all the metrics of search and retrieval
+│   │
+│   ├── logger.py                  # logging 
 │   │
 │   └── chroma_db/                 # Persistent vector storage
 │       └── [Generated files]

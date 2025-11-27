@@ -338,21 +338,33 @@ Create `.env` file:
 ```env
 # Choose ONE LLM provider:
 
-# OpenAI (Recommended for accuracy)
-OPENAI_API_KEY=sk-your-openai-key-here
-OPENAI_MODEL=gpt-4o-mini
+# OpenAI API Configuration
+#OPENAI_API_KEY=your_openai_api_key_here
+#OPENAI_MODEL=gpt-4o-mini
 
-# OR Groq (Fastest inference)
-GROQ_API_KEY=your-groq-key-here
+
+# Groq API Configuration (alternative to OpenAI)
+GROQ_API_KEY=your_grok_api_key_here
 GROQ_MODEL=llama-3.1-8b-instant
 
-# OR Google Gemini (Free tier available)
-GOOGLE_API_KEY=your-google-key-here
-GOOGLE_MODEL=gemini-2.0-flash
+# Google Gemini API Configuration (alternative to OpenAI/Groq)
+#GOOGLE_API_KEY=your_google_api_key_here
+#GOOGLE_MODEL=gemini-pro
 
-# Vector DB Settings (Optional)
-CHROMA_COLLECTION_NAME=indian_legal_acts
-EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+# Embedding Configuration
+EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2
+
+# Vector Database Configuration
+# Optional: ChromaDB collection name (default: rag_documents)
+CHROMA_COLLECTION_NAME=rag_documents
+RERANK_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
+
+# Chroma
+CHROMA_PERSIST_PATH=./chroma_db
+
+# RAG behaviour
+DEFAULT_N_RESULTS=6
+MAX_CONTEXT_CHARS=8000
 ```
 
 5. **Run the assistant**
@@ -367,24 +379,61 @@ python src/app.py
 ```bash
 $ python src/app.py
 
-Initializing RAG Assistant...
-Using OpenAI model: gpt-4o-mini
-Loading embedding model: sentence-transformers/all-MiniLM-L6-v2
-Vector database initialized with collection: indian_legal_acts
+2025-11-27 13:58:28,082 | INFO | [EMBED] Loading embedding model: sentence-transformers/all-mpnet-base-v2
+2025-11-27 13:58:34,084 | INFO | [RERANK] Loading CrossEncoder: cross-encoder/ms-marco-MiniLM-L-6-v2
+2025-11-27 13:58:37,232 | INFO | [CHROMA] Starting persistent client at ./chroma_db
+Failed to send telemetry event ClientStartEvent: capture() takes 1 positional argument but 3 were given
+Failed to send telemetry event ClientCreateCollectionEvent: capture() takes 1 positional argument but 3 were given
+2025-11-27 13:58:39,566 | INFO | [CHROMA] Collection ready: rag_documents
+2025-11-27 13:58:54,022 | INFO | [INGEST] env_prot_act_1986.pdf → 47 chunks
+2025-11-27 13:58:54,035 | INFO | [SECTIONS] Found 30 sections in env_prot_act_1986.pdf: ['1', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '2']...
+Batches: 100%|██████████| 3/3 [00:09<00:00,  3.28s/it]
+2025-11-27 13:59:04,604 | INFO | [INGEST] con_prot_act_2019.pdf → 216 chunks
+2025-11-27 13:59:04,619 | INFO | [SECTIONS] Found 112 sections in con_prot_act_2019.pdf: ['1', '10', '100', '101', '102', '103', '104', '105', '106', '107', '11', '12']...
+Batches: 100%|██████████| 14/14 [00:39<00:00,  2.84s/it]
+2025-11-27 13:59:44,401 | INFO | [INGEST] it_act_2000.pdf → 213 chunks
+2025-11-27 13:59:44,437 | INFO | [SECTIONS] Found 136 sections in it_act_2000.pdf: ['1', '10', '10a', '11', '12', '13', '14', '15', '16', '17', '18', '19']...
+Batches: 100%|██████████| 14/14 [01:04<00:00,  4.61s/it]
+2025-11-27 14:00:49,139 | INFO | [INGEST] Adding 476 chunks to Chroma...
+Failed to send telemetry event CollectionAddEvent: capture() takes 1 positional argument but 3 were given
+2025-11-27 14:00:53,044 | INFO | [INGEST] Completed successfully.
+Question > What constitutes a cyber crime under the IT Act 2000?
+2025-11-27 14:01:51,628 | INFO | [QUERY_SECTIONS] Detected in query: none
+Failed to send telemetry event CollectionQueryEvent: capture() takes 1 positional argument but 3 were given
+2025-11-27 14:01:53,031 | INFO | [EVAL] retrieval metrics: {'hit@1': 1, 'recall@1': 0.1111111111111111, 'hit@3': 1, 'recall@3': 0.48148148148148145, 'hit@5': 1, 'recall@5': 0.6296296296296297, 'mrr': 1.0} | gold_sections: ['1', '10', '2', '21', '3', '4', '43', '5', '6', '66', '66a', '66b', '66c', '66d', '66e', '66f', '67', '67a', '67b', '67c', '68', '7', '70', '91', '92', '93', '94']
+2025-11-27 14:01:53,031 | INFO | [EVAL] retrieval metrics: {'hit@1': 1, 'recall@1': 0.1111111111111111, 'hit@3': 1, 'recall@3': 0.48148148148148145, 'hit@5': 1, 'recall@5': 0.6296296296296297, 'mrr': 1.0}
+[PERF] search took 1.403s
+[PERF] invoke took 2.568s
 
-Loading documents...
-Loaded PDF: env_prot_act_1986.pdf, length: 45231 characters
-Loaded PDF: con_prot_act_2019.pdf, length: 38492 characters
-Loaded PDF: it_act_2000.pdf, length: 52103 characters
-Documents added to vector database
+----- ANSWER -----
 
-Enter a question or 'quit' to exit: 
-> What is cyber stalking?
+Based on the provided statutory context, the following sections constitute cyber crimes under the IT Act 2000:
 
-Cyber stalking is addressed under Section 66A of the IT Act 2000...
+1. **Section 66**: Computer related offences - If any person, dishonestly or fraudulently, does any act referred to in section 43, he shall be punishable with imprisonment for a term which may extend to three years or with fine which may extend to five lakh rupees or with both.
+2. **Section 66A**: Punishment for sending offensive messages through communication service, etc.
+3. **Section 66B**: Punishment for dishonestly receiving stolen computer resource or communication device.
+4. **Section 66C**: Punishment for identity theft.
+5. **Section 66D**: Punishment for cheating by personation by using computer resource.
+6. **Section 66E**: Punishment for violation of privacy.
+7. **Section 66F**: Punishment for cyber terrorism.
+8. **Section 67**: Punishment for publishing or transmitting obscene material in electronic form.
+9. **Section 67A**: Punishment for publishing or transmitting of material containing sexually explicit act, etc., in electronic form.
+10. **Section 67B**: Punishment for publishing or transmitting of material depicting children in sexually explicit act, etc., in electronic form.
 
-Enter a question or 'quit' to exit:
-> quit
+Additionally, the following sections are relevant to cyber crimes:
+
+1. **Section 43**: Computer related offences - Whoever, fraudulently or dishonestly, does any act referred to in this section shall be punishable with imprisonment for a term which may extend to three years or with fine which may extend to five lakh rupees or with both.
+2. **Section 43A**: Material claimed to be information, data or communication message apparent from ordinary observation.
+3. **Section 66D**: Punishment for cheating by personation by using computer resource.
+4. **Section 66F**: Punishment for cyber terrorism.
+5. **Section 67**: Punishment for publishing or transmitting obscene material in electronic form.
+6. **Section 67A**: Punishment for publishing or transmitting of material containing sexually explicit act, etc., in electronic form.
+7. **Section 67B**: Punishment for publishing or transmitting of material depicting children in sexually explicit act, etc., in electronic form.
+
+These sections collectively outline various cyber crimes under the IT Act 2000, including computer-related offences, identity theft, cheating, violation of privacy, cyber terrorism, and the publication or transmission of obscene or explicit material.
+
+----------------------------------------
+
 ```
 
 ### Programmatic Usage

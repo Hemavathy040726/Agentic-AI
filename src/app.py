@@ -1,212 +1,248 @@
+# src/app.py
+
+
+# src/app.py
 import os
-from itertools import chain
-from typing import List
+import re
+import logging
+from typing import List, Optional
+
 import pdfplumber
 from dotenv import load_dotenv
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from vectordb import VectorDB
+
 from langchain_openai import ChatOpenAI
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-# Load environment variables
+from src.vectordb import VectorDB
+from src.metrics import timed
+
 load_dotenv()
 
+# logging
+logger = logging.getLogger("app")
+# logger.setLevel(logging.INFO)
+# if not logger.handlers:
+#     ch = logging.StreamHandler()
+#     ch.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+#     logger.addHandler(ch)
 
-def load_documents() -> List[str]:
-    """
-    Load PDF documents from the data folder.
-    Returns:
-        List of document strings
-    """
-    #pdf_folder = "./data"
-    pdf_folder = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
-    print("pdf folder ",pdf_folder)
-    pdf_files = [
-        "env_prot_act_1986.pdf",
-        "con_prot_act_2019.pdf",
-        "it_act_2000.pdf"
-    ]
+# small in-memory KB for hinting (optional)
+KB_HINTS = {
+    "it act": ["section 66", "section 66c", "section 66d", "section 67", "section 43a", "section 66f"]
+}
+
+LEGAL_SAFE_STOPWORDS = {"please", "can you", "could you", "tell me", "explain", "briefly", "summary"}
+
+DEFAULT_PDFS = [
+    "env_prot_act_1986.pdf",
+    "con_prot_act_2019.pdf",
+    "it_act_2000.pdf"
+]
+
+
+def load_documents_from_data(data_dir: Optional[str] = None) -> List[str]:
+    if data_dir is None:
+        data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
     results = []
-
-    #Reads all pages of each PDF and stores text in a list.
-    #Each PDF corresponds to one document string.
-    for pdf_file in pdf_files:
-        path = os.path.join(pdf_folder, pdf_file)
+    for fname in DEFAULT_PDFS:
+        path = os.path.join(data_dir, fname)
         if not os.path.exists(path):
-            print(f"PDF not found: {pdf_file}")
+            logger.warning(f"[LOAD] Missing PDF: {path}")
             continue
-
-        doc_text = ""
-      #  with fitz.Document(path) as pdf:
-         #   for page in pdf:
-       #         doc_text += page.get_text()
-       # results.append(doc_text)
-
+        pages = []
         with pdfplumber.open(path) as pdf:
-            for page in pdf.pages:
-                doc_text += page.extract_text()
-        results.append(doc_text)
-        print(f"Loaded PDF: {pdf_file}, length: {len(doc_text)} characters")
+            for p in pdf.pages:
+                text = p.extract_text() or ""
+                # normalize whitespace
+                text = re.sub(r"\s+", " ", text).strip()
+                pages.append(text)
+        joined = "\n".join(pages)
+        logger.info(f"[LOAD] {fname} → {len(joined):,} chars")
+        results.append(joined)
     return results
 
 
-class RAGAssistant:
-    """
-    A simple RAG-based AI assistant using ChromaDB and multiple LLM providers.
-    Supports OpenAI, Groq, and Google Gemini APIs.
-    """
+def normalize_query(q: str) -> str:
+    q = (q or "").strip()
+    q = re.sub(r"\s+", " ", q)
+    low = q.lower()
+    for sw in LEGAL_SAFE_STOPWORDS:
+        low = low.replace(sw, " ")
+    low = re.sub(r"\s+", " ", low).strip()
+    return low
 
+
+def detect_domain(q: str) -> Optional[str]:
+    ql = q.lower()
+    if "it act" in ql or "information technology" in ql or "digital signature" in ql:
+        return "it act"
+    if "environment" in ql or "env prot" in ql:
+        return "environment"
+    if "consumer" in ql:
+        return "consumer"
+    return None
+
+
+class RAGAssistant:
     def __init__(self):
-        """Initialize the RAG assistant."""
-        # Initialize LLM - check for available API keys in order of preference
+        # initialize LLM (prefer OpenAI -> Groq -> Google)
         self.llm = self._initialize_llm()
         if not self.llm:
-            raise ValueError(
-                "No valid API key found. Please set one of: "
-                "OPENAI_API_KEY, GROQ_API_KEY, or GOOGLE_API_KEY in your .env file"
-            )
+            raise RuntimeError("No LLM available. Set OPENAI_API_KEY or GROQ_API_KEY or GOOGLE_API_KEY")
 
-        # Initialize vector database
-        self.vector_db = VectorDB()
+        # init VectorDB
+        embed_model = os.getenv("EMBEDDING_MODEL")
+        rerank_model = os.getenv("RERANK_MODEL")
+        persist = os.getenv("CHROMA_PERSIST_PATH", "./chroma_db")
+        self.vector_db = VectorDB(embedding_model=embed_model, rerank_model=rerank_model, persist_path=persist)
 
-        # Create RAG prompt template
-        # TODO: Implementing RAG prompt template
-        #This template includes {context} from your PDFs and {question} from user input.
+        # prompt template
+        #         self.prompt_template = ChatPromptTemplate.from_template(
+        #             """
+        # You are an expert Indian legal research assistant. Use ONLY the provided statutory context.
+        # Do not hallucinate or invent sections or case law.
+        #
+        # Context:
+        # {context}
+        #
+        # Question:
+        # {question}
+        #
+        # Answer precisely and cite section numbers when present in the context.
+        # If the answer is not present in the context, respond:
+        # "I could not find the exact answer in the provided documents."
+        # """
+        #         )
 
         self.prompt_template = ChatPromptTemplate.from_template(
-                                """
-                                Use the following context to answer the question as accurately as possible.
-                                
-                                Context:
-                                {context}
-                                
-                                Question:
-                                {question}
-                                
-                                Answer:
-                                """
-                                )
+            """
+            You are an expert Indian legal research assistant.
 
-        # Create the chain
-        self.chain = self.prompt_template | self.llm | StrOutputParser()
+            Instructions:
+            - Use ONLY the provided statutory context.
+            - List all relevant offences with exact section numbers.
+            - Be direct and authoritative.
+            - NEVER say "not explicitly defined" or "context does not contain" — the context IS the law.
 
-        print("RAG Assistant initialized successfully")
+            Context:
+            {context}
 
-    @staticmethod
-    def  _initialize_llm():
-        """
-        Initialize the LLM by checking for available API keys.
-        Tries OpenAI, Groq, and Google Gemini in that order.
-        """
-        # Check for OpenAI API key
-        if os.getenv("OPENAI_API_KEY"):
-            model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-            print(f"Using OpenAI model: {model_name}")
-            return ChatOpenAI(
-                api_key=os.getenv("OPENAI_API_KEY"), model=model_name, temperature=0.0
-            )
+            Question: {question}
 
-        elif os.getenv("GROQ_API_KEY"):
-            model_name = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
-            print(f"Using Groq model: {model_name}")
-            return ChatGroq(
-                api_key=os.getenv("GROQ_API_KEY"), model=model_name, temperature=0.0
-            )
+            Answer:
+            """
+        )
+        self.output_parser = StrOutputParser()
+        logger.info(f"[READY] RAG Assistant ({type(self.llm).__name__})")
 
-        elif os.getenv("GOOGLE_API_KEY"):
-            model_name = os.getenv("GOOGLE_MODEL", "gemini-2.0-flash")
-            print(f"Using Google Gemini model: {model_name}")
-            return ChatGoogleGenerativeAI(
-                google_api_key=os.getenv("GOOGLE_API_KEY"),
-                model=model_name,
-                temperature=0.0,
-            )
+    def _initialize_llm(self):
+        # OpenAI
+        if key := os.getenv("OPENAI_API_KEY"):
+            model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            logger.info(f"[LLM] Using OpenAI: {model}")
+            return ChatOpenAI(api_key=key, model=model, temperature=0.0)
 
-        else:
-            raise ValueError(
-                "No valid API key found. Please set one of: OPENAI_API_KEY, GROQ_API_KEY, or GOOGLE_API_KEY in your .env file"
-            )
+        # Groq - Option A signature
+        if key := os.getenv("GROQ_API_KEY"):
+            model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+            logger.info(f"[LLM] Using Groq: {model}")
+            return ChatGroq(model=model, groq_api_key=key, temperature=0.0)
 
-    def add_documents(self, documents: List) -> None:
-        """
-        Add documents to the knowledge base.
+        # Google Gemini
+        if key := os.getenv("GOOGLE_API_KEY"):
+            model = os.getenv("GOOGLE_MODEL", "gemini-1.5-flash")
+            logger.info(f"[LLM] Using Google Gemini: {model}")
+            return ChatGoogleGenerativeAI(google_api_key=key, model=model, temperature=0.0)
 
-        Args:
-            documents: List of documents
-        """
+        return None
+
+    @timed
+    def add_documents(self, documents: List[str]):
         self.vector_db.add_documents(documents)
 
-    def invoke(self, input: str, n_results: int = 3) -> str:
-        """
-        Query the RAG assistant using GPT-4o-mini.
+    @timed
+    def invoke(self, raw_query: str, n_results: int = 6) -> str:
+        if not raw_query or not raw_query.strip():
+            return "Please provide a question."
 
-        Args:
-            input: User's input
-            n_results: Number of relevant chunks to retrieve
+        q = normalize_query(raw_query)
+        logger.info(f"[QUERY] preprocessed: {q}")
 
-        Returns:
-            Dictionary containing the answer and retrieved context
-        """
+        domain = detect_domain(q)
+        kb_hits = KB_HINTS.get(domain, []) if domain else []
+        logger.info(f"[INFO] domain={domain}, kb_hits={kb_hits}")
 
-        # TODO: Implement the RAG query pipeline
-        # HINT: Use self.vector_db.search() to retrieve relevant context chunks
-        # HINT: Combine the retrieved document chunks into a single context string
-        # HINT: Use self.chain.invoke() with context and question to generate the response
-        # HINT: Return a string answer from the LLM
+        # perform search (pass kb_hits as eval gold for metrics)
+        res = self.vector_db.search(q, n_results=n_results)
+        docs = res.get("documents", [])
+        eval_info = res.get("eval")
+        if eval_info:
+            logger.info(f"[EVAL] retrieval metrics: {eval_info}")
 
-        # 1️⃣ Retrieve relevant chunks
-        search_results = self.vector_db.search(input, n_results=n_results)
+        if not docs:
+            return "I could not find the exact answer in the provided documents."
 
-        chunks = search_results.get("documents", [])
-        flat_chunks = list(chain.from_iterable(chunks))
-        if not chunks:
-            return "No relevant information found in the documents."
+        # prioritize chunks that match KB hits
+        prioritized = []
+        for k in kb_hits:
+            for d in docs:
+                if k and k.lower() in d.lower() and d not in prioritized:
+                    prioritized.append(d)
+        for d in docs:
+            if d not in prioritized:
+                prioritized.append(d)
 
-        # 2️⃣ Combine chunks into single context
-        context = "\n\n".join(flat_chunks)
+        # include small KB hint block for LLM guidance (clearly labeled)
+        kb_block = ""
+        if kb_hits:
+            kb_block = "\n".join([f"[KB_HINT] {h}" for h in kb_hits]) + "\n\n"
 
-        # 3️⃣ Use the prompt template
-        prompt = self.prompt_template.format(context=context, question=input)
+        context = kb_block + "\n\n---\n\n".join(prioritized)
+        max_chars = int(os.getenv("MAX_CONTEXT_CHARS", "8000"))
+        if len(context) > max_chars:
+            context = context[:max_chars] + "\n\n... (context truncated)"
 
-        # 4️⃣ Generate answer using the LLM
-        llm_answer = self.llm.invoke(prompt)  # ChatOpenAI automatically handles the call
+        logger.info(f"[CONTEXT] using {len(prioritized)} chunks, {len(context):,} chars")
 
-        return llm_answer.text
+        prompt = self.prompt_template.format(context=context, question=raw_query)
+
+        try:
+            # Call LLM: wrappers often accept list-of-messages; keep consistent with previous usage.
+
+            llm_resp = self.llm.invoke([{"role": "user", "content": prompt}])
+            # accept common response shapes
+            answer = getattr(llm_resp, "content", None) or getattr(llm_resp, "text", None) or str(llm_resp)
+            return answer.strip()
+        except Exception as e:
+            logger.error(f"[LLM ERROR] {e}")
+            return "Failed to generate answer due to LLM error."
 
 
 def main():
-    """Main function to demonstrate the RAG assistant."""
-    try:
-        # Initialize the RAG assistant
-        print("Initializing RAG Assistant...")
-        assistant = RAGAssistant()
+    logger.info("Starting RAG Legal Assistant")
+    assistant = RAGAssistant()
 
-        # Load sample documents
-        print("\nLoading documents...")
-        docs = load_documents()
-        print(f"Loaded {len(docs)} sample documents")
+    logger.info("\nLoading and indexing PDFs...")
+    docs = load_documents_from_data()
+    if docs:
+        assistant.vector_db.add_documents(docs, source_names=DEFAULT_PDFS)
 
-        assistant.add_documents(docs)
+    else:
+        logger.warning("[WARN] No PDFs loaded. Place PDFs in ./data and re-run.")
 
-        done = False
-
-        while not done:
-            question = input("Enter a question or 'quit' to exit: ")
-            if question.lower() == "quit":
-                done = True
-            else:
-                result = assistant.invoke(question)
-                print(result)
-
-    except Exception as e:
-        print(f"Error running RAG assistant: {e}")
-        print("Make sure you have set up your .env file with at least one API key:")
-        print("- OPENAI_API_KEY (OpenAI GPT models)")
-        print("- GROQ_API_KEY (Groq Llama models)")
-        print("- GOOGLE_API_KEY (Google Gemini models)")
+    logger.info("Ready. Ask questions (type 'quit' to exit).")
+    while True:
+        q = input("Question > ").strip()
+        if q.lower() in {"quit", "exit", "bye"}:
+            break
+        ans = assistant.invoke(q, n_results=int(os.getenv("DEFAULT_N_RESULTS", "6")))
+        print("\n----- ANSWER -----\n")
+        print(ans)
+        print("\n" + "-" * 40 + "\n")
 
 
 if __name__ == "__main__":

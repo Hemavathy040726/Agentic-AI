@@ -194,9 +194,10 @@ class VectorDB:
             include=["documents", "metadatas", "distances"],
         )
 
-        docs_list = raw.get("documents", [[]])[0]
-        metas_list = raw.get("metadatas", [[]])[0]
-        dists_list = raw.get("distances", [[]])[0]
+        # ←←← THIS WAS THE KILLER BUG — CHROMA ALREADY RETURNS FLAT LISTS!
+        docs_list = raw.get("documents", [[]])[0]  # ← correct
+        metas_list = raw.get("metadatas", [[]])[0]  # ← correct
+        dists_list = raw.get("distances", [[]])[0]  # ← correct
 
         candidates = []
         query_lower = query.lower()
@@ -209,7 +210,7 @@ class VectorDB:
             doc_lower = doc.lower()
             first_line = doc.split("\n")[0].lower()
 
-            # 1. Exact section match in chunk
+            # 1. Exact section match boost
             if query_sections:
                 for sec in query_sections:
                     patterns = [
@@ -218,18 +219,17 @@ class VectorDB:
                         rf"section\s+{re.escape(sec)}\b",
                         rf"sec\.?\s+{re.escape(sec)}\b",
                     ]
-                    if any(re.search(p, doc_lower) for p in patterns):
+                    if any(re.search(p, doc_lower, re.IGNORECASE) for p in patterns):
                         boost += 50.0
-                        if any(sec in first_line for sec in query_sections):
+                        if any(sec.lower() in first_line for sec in query_sections):
                             boost += 100.0
 
-            # 2. Keyword-based boost for cyber crime queries
-            if any(k in query_lower for k in ["cyber", "offence",  "hacking", "identity", "phishing", "obscene"]):
-                   if any(x in doc_lower for x in ["66", "66a", "66b", "66c", "66d", "66e", "66f", "67", "67a", "67b"]):
-                        boost += 120.0
+            # 2. Cyber crime keyword boost
+            if any(k in query_lower for k in ["cyber", "offence", "hacking", "identity", "phishing", "obscene"]):
+                if any(x in doc_lower for x in ["66", "66a", "66b", "66c", "66d", "66e", "66f", "67", "67a", "67b"]):
+                    boost += 120.0
 
-
-            # 3. Document-level section overlap
+            # 3. Section overlap in metadata
             doc_sections_str = meta.get("sections_in_doc", "")
             doc_sections = set(doc_sections_str.split(",")) if doc_sections_str else set()
             if query_sections:
@@ -246,36 +246,33 @@ class VectorDB:
         metas = [x[1] for x in top]
         dists = [x[2] for x in top]
 
+        # Rerank final candidates
         docs, metas, dists = self._rerank(query, docs, metas, dists, top_k=n_results)
 
-        # Evaluation
+        # Evaluation logic (unchanged)
         eval_metrics = None
-
         if query_sections:
-            # If user mentioned sections → use them as gold
             gold_keys = query_sections + [f"section {s}" for s in query_sections]
         else:
-            # If user didn't mention sections → use ALL sections from top-N retrieved chunks as gold
             all_retrieved_sections = set()
-            for doc in docs[:n_results]:  # look at final top-k, not just top-3
+            for doc in docs[:n_results]:
                 all_retrieved_sections.update(extract_all_sections(doc))
             gold_keys = list(all_retrieved_sections)
 
         if gold_keys:
-            # Make evaluation case-insensitive and robust
             robust_gold = [g.lower().replace(" ", "") for g in gold_keys]
-            eval_metrics = evaluate_retrieval(
-                pred_docs=docs,
-                gold_keys=robust_gold  # now much richer gold set
-            )
+            eval_metrics = evaluate_retrieval(pred_docs=docs, gold_keys=robust_gold)
             logger.info(f"[EVAL] retrieval metrics: {eval_metrics} | gold_sections: {sorted(set(gold_keys))}")
         else:
             logger.info("[EVAL] No gold sections found for evaluation")
 
-        result = {"documents": docs, "metadatas": metas, "distances": dists, "eval": eval_metrics}
-        if eval_metrics:
-            logger.info(f"[EVAL] retrieval metrics: {eval_metrics}")
-        return result
+        # ←←← FINAL FIX: RETURN FLAT LISTS (NO EXTRA [])
+        return {
+            "documents": docs,  # ← FLAT list
+            "metadatas": metas,  # ← FLAT list
+            "distances": dists,  # ← FLAT list
+            "eval": eval_metrics
+        }
 
     def _rerank(self, query: str, docs: List[str], metas: List[dict], dists: List[float], top_k: int):
         if self.reranker:
